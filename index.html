@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Squat Counter</title>
+<title>Rep Counter</title>
 <style>
   :root { --bg: #0e1214; --fg: #eef3f1; --muted: #93a39e; --good: #3ddc84; --warn: #ffb547; color-scheme: dark; }
   html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
@@ -18,9 +18,11 @@
   #label { font-size: 20px; color: var(--muted); }
   #msg { font-size: clamp(28px, 5vw, 56px); font-weight: 700; min-height: 1.2em; }
   #msg.good { color: var(--good); } #msg.warn { color: var(--warn); }
-  #start { position: absolute; font: inherit; font-size: 28px; padding: 20px 40px; border: 0; border-radius: 16px;
+  #menu { position: absolute; display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; }
+  #menu button { font: inherit; font-size: 28px; padding: 20px 40px; border: 0; border-radius: 16px;
     background: var(--good); color: #062; font-weight: 700; }
-  #start:focus-visible { outline: 3px solid var(--fg); outline-offset: 4px; }
+  #menu button:disabled { opacity: .6; }
+  #menu button:focus-visible { outline: 3px solid var(--fg); outline-offset: 4px; }
   #hint { position: absolute; bottom: max(16px, env(safe-area-inset-bottom)); left: 0; right: 0;
     text-align: center; color: var(--muted); font-size: 18px; padding-inline: 16px; }
 </style>
@@ -28,14 +30,17 @@
 <body>
 <div id="stage">
   <div id="cam"><video id="video" playsinline muted></video><canvas id="overlay"></canvas></div>
-  <div id="hud" hidden><div id="label">จำนวนครั้ง</div><div id="reps">0</div><div id="msg"></div></div>
-  <button id="start">เริ่ม</button>
-  <div id="hint">วาง iPad ด้านข้างลำตัว ให้เห็นตั้งแต่ไหล่ถึงข้อเท้า</div>
+  <div id="hud" hidden><div id="label"></div><div id="reps">0</div><div id="msg"></div></div>
+  <div id="menu">
+    <button id="squat">Squat</button>
+    <button id="pushup">Push-up</button>
+  </div>
+  <div id="hint">วาง iPad ด้านข้างลำตัว ให้เห็นทั้งตัว (push-up: วางบนพื้น)</div>
 </div>
 
 <script type="module">
 // LOGIC START — พอร์ตมาจาก squat.py ค่าเดียวกันทุกตัว
-const START_ANGLE = 140, DOWN_ANGLE = 100, UP_ANGLE = 160, MAX_LEAN = 45;
+const MAX_LEAN = 45, BODY_MIN = 160;
 
 function angle(a, b, c) {
   let ang = Math.abs((Math.atan2(c[1] - b[1], c[0] - b[0]) - Math.atan2(a[1] - b[1], a[0] - b[0])) * 180 / Math.PI);
@@ -44,33 +49,50 @@ function angle(a, b, c) {
 function lean(shoulder, hip) {
   return Math.atan2(Math.abs(shoulder[0] - hip[0]), Math.abs(shoulder[1] - hip[1])) * 180 / Math.PI;
 }
-class SquatCounter {
-  reps = 0; stage = "up"; msg = ""; good = true; leaned = false;
-  update(knee, torso) {
-    if (this.stage !== "up" && torso > MAX_LEAN) { this.leaned = true; this.say("ยืดอกขึ้น!", false); }
-    if (this.stage === "up" && knee < START_ANGLE) { this.stage = "going_down"; this.leaned = false; }
+function hipSag(s, h, a) {  // สะโพกต่ำกว่าเส้นไหล่-ข้อเท้า ไม่ว่าหันซ้ายหรือขวา
+  const cross = (a[0] - s[0]) * (h[1] - s[1]) - (a[1] - s[1]) * (h[0] - s[0]);
+  return cross * Math.sign(a[0] - s[0] || 1) > 0;
+}
+class RepCounter {
+  constructor(start, down, up) { Object.assign(this, { start, down, up, reps: 0, stage: "up", msg: "", good: true, error: null }); }
+  update(a, formError = null) {
+    if (this.stage !== "up" && formError) { this.error = formError; this.say(formError, false); }
+    if (this.stage === "up" && a < this.start) { this.stage = "going_down"; this.error = null; }
     else if (this.stage === "going_down") {
-      if (knee < DOWN_ANGLE) this.stage = "down";
-      else if (knee > UP_ANGLE) { this.stage = "up"; this.say("ย่อลงอีก!", false); }
-    } else if (this.stage === "down" && knee > UP_ANGLE) {
+      if (a < this.down) this.stage = "down";
+      else if (a > this.up) { this.stage = "up"; this.say("ลงอีก!", false); }
+    } else if (this.stage === "down" && a > this.up) {
       this.stage = "up"; this.reps++;
-      this.leaned ? this.say("นับแล้ว แต่ระวังหลัง", false) : this.say("ดีมาก!", true);
+      this.error ? this.say("นับแล้ว · " + this.error, false) : this.say("ดีมาก!", true);
     }
   }
   say(msg, good) { this.msg = msg; this.good = good; }
 }
+const EXERCISES = {
+  squat: {
+    label: "Squat", thresholds: [140, 100, 160], lines: [["shoulder", "hip", "knee", "ankle"]],
+    check: p => [angle(p.hip, p.knee, p.ankle), lean(p.shoulder, p.hip) > MAX_LEAN ? "ยืดอกขึ้น!" : null],
+  },
+  pushup: {
+    label: "Push-up", thresholds: [140, 90, 160], lines: [["shoulder", "elbow", "wrist"], ["shoulder", "hip", "ankle"]],
+    check: p => [angle(p.shoulder, p.elbow, p.wrist),
+      angle(p.shoulder, p.hip, p.ankle) >= BODY_MIN ? null : hipSag(p.shoulder, p.hip, p.ankle) ? "เกร็งท้อง!" : "ลดสะโพกลง!"],
+  },
+};
 // LOGIC END
 
-const LEFT = { shoulder: 11, hip: 23, knee: 25, ankle: 27 };
-const RIGHT = { shoulder: 12, hip: 24, knee: 26, ankle: 28 };
+const LEFT = { shoulder: 11, elbow: 13, wrist: 15, hip: 23, knee: 25, ankle: 27 };
+const RIGHT = { shoulder: 12, elbow: 14, wrist: 16, hip: 24, knee: 26, ankle: 28 };
 const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35";
 const MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
 
 const $ = id => document.getElementById(id);
 const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
+const buttons = [...document.querySelectorAll("#menu button")];
 
-$("start").onclick = async () => {
-  $("start").disabled = true; $("start").textContent = "กำลังโหลด...";
+buttons.forEach(btn => btn.onclick = async () => {
+  const ex = EXERCISES[btn.id];
+  buttons.forEach(b => b.disabled = true); btn.textContent = "กำลังโหลด...";
   try {
     const { PoseLandmarker, FilesetResolver } = await import(`${MP}/vision_bundle.mjs`);
     const fileset = await FilesetResolver.forVisionTasks(`${MP}/wasm`);
@@ -79,15 +101,15 @@ $("start").onclick = async () => {
     const landmarker = await make("GPU").catch(() => make("CPU"));  // GPU บาง iPad ใช้ไม่ได้ ถอยไป CPU
     video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 1280, height: 720 }, audio: false });
     await video.play();
-    $("start").hidden = true; $("hud").hidden = false;
-    loop(landmarker, new SquatCounter());
+    $("menu").hidden = true; $("hud").hidden = false; $("label").textContent = ex.label + " · จำนวนครั้ง";
+    loop(landmarker, ex, new RepCounter(...ex.thresholds));
   } catch (e) {
-    $("start").disabled = false; $("start").textContent = "ลองอีกครั้ง";
+    buttons.forEach(b => { b.disabled = false; b.textContent = EXERCISES[b.id].label; });
     $("hint").textContent = "เปิดกล้องหรือโหลดโมเดลไม่ได้: " + e.message + " (ต้องเปิดผ่าน https และอนุญาตกล้อง)";
   }
-};
+});
 
-function loop(landmarker, counter) {
+function loop(landmarker, ex, counter) {
   let lastTs = -1;
   const tick = () => {
     if (video.readyState >= 2) {
@@ -98,13 +120,15 @@ function loop(landmarker, counter) {
       ctx.clearRect(0, 0, w, h);
       if (lm) {
         const vis = s => Object.values(s).reduce((t, i) => t + (lm[i].visibility ?? 0), 0);
-        const side = vis(LEFT) >= vis(RIGHT) ? LEFT : RIGHT;  // ใช้ขาข้างที่เห็นชัดกว่า
+        const side = vis(LEFT) >= vis(RIGHT) ? LEFT : RIGHT;  // ใช้ข้างลำตัวที่เห็นชัดกว่า
         const p = Object.fromEntries(Object.entries(side).map(([k, i]) => [k, [lm[i].x * w, lm[i].y * h]]));
-        const knee = angle(p.hip, p.knee, p.ankle);
-        counter.update(knee, lean(p.shoulder, p.hip));
-        ctx.strokeStyle = "#fff"; ctx.lineWidth = 6; ctx.beginPath();
-        ["shoulder", "hip", "knee", "ankle"].forEach((k, i) => i ? ctx.lineTo(...p[k]) : ctx.moveTo(...p[k]));
-        ctx.stroke();
+        counter.update(...ex.check(p));
+        ctx.strokeStyle = "#fff"; ctx.lineWidth = 6;
+        for (const line of ex.lines) {
+          ctx.beginPath();
+          line.forEach((k, i) => i ? ctx.lineTo(...p[k]) : ctx.moveTo(...p[k]));
+          ctx.stroke();
+        }
         $("reps").textContent = counter.reps;
         $("msg").textContent = counter.msg;
         $("msg").className = counter.good ? "good" : "warn";
