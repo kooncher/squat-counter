@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Squat Counter</title>
+<style>
+  :root { --bg: #0e1214; --fg: #eef3f1; --muted: #93a39e; --good: #3ddc84; --warn: #ffb547; color-scheme: dark; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+    font-family: "Sarabun", system-ui, -apple-system, sans-serif; }
+  #stage { position: relative; height: 100%; display: grid; place-items: center; overflow: hidden; }
+  #cam { position: relative; transform: scaleX(-1); max-width: 100%; max-height: 100%; }
+  #cam video, #cam canvas { display: block; max-width: 100vw; max-height: 100vh; }
+  #cam canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #hud { position: absolute; top: max(16px, env(safe-area-inset-top)); left: max(16px, env(safe-area-inset-left));
+    display: grid; gap: 4px; text-shadow: 0 2px 8px #000; }
+  #reps { font-size: clamp(64px, 14vw, 160px); font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+  #label { font-size: 20px; color: var(--muted); }
+  #msg { font-size: clamp(28px, 5vw, 56px); font-weight: 700; min-height: 1.2em; }
+  #msg.good { color: var(--good); } #msg.warn { color: var(--warn); }
+  #start { position: absolute; font: inherit; font-size: 28px; padding: 20px 40px; border: 0; border-radius: 16px;
+    background: var(--good); color: #062; font-weight: 700; }
+  #start:focus-visible { outline: 3px solid var(--fg); outline-offset: 4px; }
+  #hint { position: absolute; bottom: max(16px, env(safe-area-inset-bottom)); left: 0; right: 0;
+    text-align: center; color: var(--muted); font-size: 18px; padding-inline: 16px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="cam"><video id="video" playsinline muted></video><canvas id="overlay"></canvas></div>
+  <div id="hud" hidden><div id="label">จำนวนครั้ง</div><div id="reps">0</div><div id="msg"></div></div>
+  <button id="start">เริ่ม</button>
+  <div id="hint">วาง iPad ด้านข้างลำตัว ให้เห็นตั้งแต่ไหล่ถึงข้อเท้า</div>
+</div>
+
+<script type="module">
+// LOGIC START — พอร์ตมาจาก squat.py ค่าเดียวกันทุกตัว
+const START_ANGLE = 140, DOWN_ANGLE = 100, UP_ANGLE = 160, MAX_LEAN = 45;
+
+function angle(a, b, c) {
+  let ang = Math.abs((Math.atan2(c[1] - b[1], c[0] - b[0]) - Math.atan2(a[1] - b[1], a[0] - b[0])) * 180 / Math.PI);
+  return ang > 180 ? 360 - ang : ang;
+}
+function lean(shoulder, hip) {
+  return Math.atan2(Math.abs(shoulder[0] - hip[0]), Math.abs(shoulder[1] - hip[1])) * 180 / Math.PI;
+}
+class SquatCounter {
+  reps = 0; stage = "up"; msg = ""; good = true; leaned = false;
+  update(knee, torso) {
+    if (this.stage !== "up" && torso > MAX_LEAN) { this.leaned = true; this.say("ยืดอกขึ้น!", false); }
+    if (this.stage === "up" && knee < START_ANGLE) { this.stage = "going_down"; this.leaned = false; }
+    else if (this.stage === "going_down") {
+      if (knee < DOWN_ANGLE) this.stage = "down";
+      else if (knee > UP_ANGLE) { this.stage = "up"; this.say("ย่อลงอีก!", false); }
+    } else if (this.stage === "down" && knee > UP_ANGLE) {
+      this.stage = "up"; this.reps++;
+      this.leaned ? this.say("นับแล้ว แต่ระวังหลัง", false) : this.say("ดีมาก!", true);
+    }
+  }
+  say(msg, good) { this.msg = msg; this.good = good; }
+}
+// LOGIC END
+
+const LEFT = { shoulder: 11, hip: 23, knee: 25, ankle: 27 };
+const RIGHT = { shoulder: 12, hip: 24, knee: 26, ankle: 28 };
+const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35";
+const MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
+
+const $ = id => document.getElementById(id);
+const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
+
+$("start").onclick = async () => {
+  $("start").disabled = true; $("start").textContent = "กำลังโหลด...";
+  try {
+    const { PoseLandmarker, FilesetResolver } = await import(`${MP}/vision_bundle.mjs`);
+    const fileset = await FilesetResolver.forVisionTasks(`${MP}/wasm`);
+    const make = delegate => PoseLandmarker.createFromOptions(fileset,
+      { baseOptions: { modelAssetPath: MODEL, delegate }, runningMode: "VIDEO", numPoses: 1 });
+    const landmarker = await make("GPU").catch(() => make("CPU"));  // GPU บาง iPad ใช้ไม่ได้ ถอยไป CPU
+    video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 1280, height: 720 }, audio: false });
+    await video.play();
+    $("start").hidden = true; $("hud").hidden = false;
+    loop(landmarker, new SquatCounter());
+  } catch (e) {
+    $("start").disabled = false; $("start").textContent = "ลองอีกครั้ง";
+    $("hint").textContent = "เปิดกล้องหรือโหลดโมเดลไม่ได้: " + e.message + " (ต้องเปิดผ่าน https และอนุญาตกล้อง)";
+  }
+};
+
+function loop(landmarker, counter) {
+  let lastTs = -1;
+  const tick = () => {
+    if (video.readyState >= 2) {
+      const w = canvas.width = video.videoWidth, h = canvas.height = video.videoHeight;
+      const ts = Math.max(lastTs + 1, Math.round(performance.now()));  // timestamp ต้องเพิ่มขึ้นเสมอ
+      lastTs = ts;
+      const lm = landmarker.detectForVideo(video, ts).landmarks[0];
+      ctx.clearRect(0, 0, w, h);
+      if (lm) {
+        const vis = s => Object.values(s).reduce((t, i) => t + (lm[i].visibility ?? 0), 0);
+        const side = vis(LEFT) >= vis(RIGHT) ? LEFT : RIGHT;  // ใช้ขาข้างที่เห็นชัดกว่า
+        const p = Object.fromEntries(Object.entries(side).map(([k, i]) => [k, [lm[i].x * w, lm[i].y * h]]));
+        const knee = angle(p.hip, p.knee, p.ankle);
+        counter.update(knee, lean(p.shoulder, p.hip));
+        ctx.strokeStyle = "#fff"; ctx.lineWidth = 6; ctx.beginPath();
+        ["shoulder", "hip", "knee", "ankle"].forEach((k, i) => i ? ctx.lineTo(...p[k]) : ctx.moveTo(...p[k]));
+        ctx.stroke();
+        $("reps").textContent = counter.reps;
+        $("msg").textContent = counter.msg;
+        $("msg").className = counter.good ? "good" : "warn";
+      }
+    }
+    requestAnimationFrame(tick);
+  };
+  tick();
+}
+</script>
+</body>
+</html>
